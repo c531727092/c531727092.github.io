@@ -43,7 +43,7 @@
       document.querySelectorAll('[data-post-toc] a[href^="#"]')
     );
 
-    if (!tocLinks.length) return;
+    if (!tocLinks.length) return () => {};
 
     const sections = tocLinks
       .map((link) => {
@@ -58,7 +58,7 @@
       })
       .filter(Boolean);
 
-    if (!sections.length) return;
+    if (!sections.length) return () => {};
 
     const setActive = (activeId) => {
       tocLinks.forEach((link) => {
@@ -83,9 +83,19 @@
 
     syncActive();
 
-    window.addEventListener('scroll', syncActive, { passive: true });
-    window.addEventListener('resize', syncActive);
-    window.addEventListener('hashchange', syncActive);
+    const onScroll = () => syncActive();
+    const onResize = () => syncActive();
+    const onHashChange = () => syncActive();
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+    window.addEventListener('hashchange', onHashChange);
+
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('hashchange', onHashChange);
+    };
   };
 
   const initReadingProgress = () => {
@@ -115,27 +125,14 @@
       await navigator.clipboard.writeText(text);
       return true;
     }
-
-    const input = document.createElement('textarea');
-    input.value = text;
-    input.setAttribute('readonly', 'readonly');
-    input.style.position = 'absolute';
-    input.style.left = '-9999px';
-    document.body.appendChild(input);
-    input.select();
-
-    try {
-      return document.execCommand('copy');
-    } finally {
-      document.body.removeChild(input);
-    }
+    return false;
   };
 
   const normalizeLanguage = (pre) => {
     const raw = pre.dataset.language || '';
     const language = raw.trim().toLowerCase();
 
-    if (!language || language === 'none' || language === 'plaintext') {
+    if (!language || language === 'none' || language === 'plaintext' || language === 'text' || language === 'plain') {
       return 'text';
     }
 
@@ -143,15 +140,17 @@
   };
 
   const initCodeFrames = () => {
-    const blocks = document.querySelectorAll('.article__content pre');
+    const codeBlocks = document.querySelectorAll('.article__content pre, .article__content figure.highlight');
 
-    if (!blocks.length) return;
+    if (!codeBlocks.length) return;
 
-    blocks.forEach((pre) => {
-      if (pre.parentElement?.classList.contains('code-frame')) return;
+    codeBlocks.forEach((block) => {
+      if (block.classList?.contains('code-frame')) return;
+      if (block.parentElement?.classList.contains('code-frame')) return;
+      if (block.parentElement?.classList.contains('code-frame__head')) return;
 
-      const code = pre.querySelector('code');
-      if (!code) return;
+      const pre = block.tagName === 'PRE' ? block : block.querySelector('pre');
+      if (!pre) return;
 
       const frame = document.createElement('div');
       frame.className = 'code-frame';
@@ -167,9 +166,13 @@
         traffic.appendChild(document.createElement('span'));
       }
 
+      const language = block.tagName === 'PRE'
+        ? block.getAttribute('class')?.replace('highlight', '').trim() || 'text'
+        : block.className.replace('highlight', '').replace('highlight-', '').trim() || 'text';
+
       const label = document.createElement('span');
       label.className = 'code-frame__label';
-      label.textContent = normalizeLanguage(pre);
+      label.textContent = normalizeLanguage({ dataset: { language } });
 
       const button = document.createElement('button');
       button.type = 'button';
@@ -177,11 +180,12 @@
       button.textContent = '复制';
       button.setAttribute('aria-label', '复制代码');
 
+      const code = pre.querySelector('code') || pre;
       button.addEventListener('click', async () => {
         const originalText = button.textContent;
 
         try {
-          await copyText(code.innerText);
+          await copyText(code.innerText || code.textContent);
           button.textContent = '已复制';
           button.classList.add('is-copied');
         } catch (error) {
@@ -196,8 +200,8 @@
 
       head.append(traffic, label, button);
 
-      pre.parentNode.insertBefore(frame, pre);
-      frame.append(head, pre);
+      block.parentNode.insertBefore(frame, block);
+      frame.append(head, block);
     });
   };
 
@@ -231,9 +235,74 @@
     if (!candidate) return '';
 
     const normalized = candidate.toLowerCase();
-    if (normalized === basename || normalized === `${basename}.png`) return '';
+    if (normalized === basename || normalized === `${basename}.png` || normalized === 'zoom') return '';
 
     return candidate;
+  };
+
+  const initImageZoom = () => {
+    const container = document.querySelector('.article__content');
+    if (!container) return;
+
+    const closeZoom = (activeEl) => {
+      activeEl.classList.remove('active');
+      document.removeEventListener('click', onOutsideClick);
+      document.removeEventListener('keydown', onKeydown);
+    };
+
+    const onKeydown = (e) => {
+      if (e.key === 'Escape') {
+        const active = container.querySelector('.zoomable.active');
+        if (active) closeZoom(active);
+      }
+    };
+
+    const onOutsideClick = (e) => {
+      const active = container.querySelector('.zoomable.active');
+      if (active && !active.contains(e.target)) {
+        closeZoom(active);
+      }
+    };
+
+    const figures = container.querySelectorAll('figure.article-media');
+    const images = container.querySelectorAll('img:not(.zoomable)');
+
+    figures.forEach((figure) => {
+      const img = figure.querySelector('img');
+      if (!img) return;
+
+      figure.classList.add('zoomable');
+      figure.style.cursor = 'zoom-in';
+
+      figure.addEventListener('click', (e) => {
+        e.stopPropagation();
+        figure.classList.toggle('active');
+        if (figure.classList.contains('active')) {
+          document.addEventListener('click', onOutsideClick);
+          document.addEventListener('keydown', onKeydown);
+        } else {
+          document.removeEventListener('click', onOutsideClick);
+          document.removeEventListener('keydown', onKeydown);
+        }
+      });
+    });
+
+    images.forEach((img) => {
+      img.classList.add('zoomable');
+      img.style.cursor = 'zoom-in';
+
+      img.addEventListener('click', (e) => {
+        e.stopPropagation();
+        img.classList.toggle('active');
+        if (img.classList.contains('active')) {
+          document.addEventListener('click', onOutsideClick);
+          document.addEventListener('keydown', onKeydown);
+        } else {
+          document.removeEventListener('click', onOutsideClick);
+          document.removeEventListener('keydown', onKeydown);
+        }
+      });
+    });
   };
 
   const initImageCaptions = () => {
@@ -298,5 +367,6 @@
   initPostToc();
   initReadingProgress();
   initCodeFrames();
-  initImageCaptions();
+  // initImageCaptions(); // 注释掉以禁用图片编号标注
+  initImageZoom();
 })();
